@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    accent-color: #8C4A38;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #FAF7F2;
+    color: #2B2825;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Global mellow selection highlight for all elements, inputs, and textareas */
+  ::selection,
+  *::selection,
+  input::selection,
+  textarea::selection {
+    background-color: #E7C8BB !important; /* Soft warm dusty rose / beige */
+    color: #2B2825 !important;            /* Warm charcoal text */
+  }
+
+  ::-moz-selection,
+  input::-moz-selection,
+  textarea::-moz-selection {
+    background-color: #E7C8BB !important;
+    color: #2B2825 !important;
+  }
+}
+
+/* Subtle, mellow scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #DDD5C8;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #CCC1B0;
+}
+
+/* Leaflet map popup boutique styling */
+.leaflet-popup-content-wrapper {
+  padding: 0;
+  border-radius: 1.25rem;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(43, 40, 37, 0.08);
+  border: 1px solid #EAE4DA;
+  background: #FFFFFF;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  line-height: normal;
+}
+
+.custom-marker-icon {
+  background: transparent;
+  border: none;
+}
