@@ -18,7 +18,9 @@ import {
 } from 'lucide-react';
 import { useDateStore } from '../../store/useDateStore';
 import { useGeolocation } from '../../hooks/useGeolocation';
-import { geocodeAddress } from '../../services/api';
+import { useDebounce } from '../../hooks/useDebounce';
+import { geocodeAddress, fetchGeocodeSuggestions } from '../../services/api';
+import { GeocodeResult } from '../../types/place';
 import { DateCategory, CuisineCategory } from '../../types/place';
 import { FilterBottomSheet } from './FilterBottomSheet';
 import { POPULAR_DATE_HUBS, RecommendedLocation, getMatchingRecommendations } from '../../utils/recommendedLocations';
@@ -69,10 +71,48 @@ export const SearchAndFilterBar: React.FC<{
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [geocodeSuggestions, setGeocodeSuggestions] = useState<GeocodeResult[]>([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const debouncedAddressInput = useDebounce(addressInput, 300);
   const { getCurrentLocation, loading: isGpsLoading } = useGeolocation();
+
+  // Fetch Nominatim suggestions as user types
+  useEffect(() => {
+    if (!debouncedAddressInput.trim() || debouncedAddressInput.trim().length < 2) {
+      setGeocodeSuggestions([]);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingSuggestions(true);
+
+    fetchGeocodeSuggestions(debouncedAddressInput)
+      .then(results => {
+        if (!cancelled) setGeocodeSuggestions(results);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSuggestions(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedAddressInput]);
+
+  const handleSelectGeocodeSuggestion = (suggestion: GeocodeResult) => {
+    setSelectedLocation({
+      lat: suggestion.lat,
+      lng: suggestion.lng,
+      name: suggestion.displayName.split(',')[0],
+    });
+    setAddressInput(suggestion.displayName);
+    setGeocodeSuggestions([]);
+    setIsDropdownOpen(false);
+    onSearchSubmit();
+  };
 
   // Active filter count
   const activeFiltersCount =
@@ -123,8 +163,8 @@ export const SearchAndFilterBar: React.FC<{
     onSearchSubmit();
   };
 
-  const handleAddressSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleAddressSearch = async (e?: React.FormEvent | React.MouseEvent) => {
+    e?.preventDefault();
     if (!addressInput.trim()) return;
 
     const directMatch = POPULAR_DATE_HUBS.find(
@@ -159,7 +199,6 @@ export const SearchAndFilterBar: React.FC<{
     } else {
       setSelectedCategory(catId);
     }
-    setTimeout(() => onSearchSubmit(), 0);
   };
 
   const toggleCuisine = (cuisineId: CuisineCategory) => {
@@ -168,7 +207,6 @@ export const SearchAndFilterBar: React.FC<{
     } else {
       setSelectedCuisine(cuisineId);
     }
-    setTimeout(() => onSearchSubmit(), 0);
   };
 
   const matchedRecommendations = getMatchingRecommendations(addressInput);
@@ -232,6 +270,39 @@ export const SearchAndFilterBar: React.FC<{
                 </div>
 
                 <div className="p-1.5 divide-y divide-[#F5EFE6]">
+                  {isLoadingSuggestions && addressInput.trim().length >= 2 && (
+                    <div className="p-3 text-xs text-[#635B53] font-medium">Searching locations...</div>
+                  )}
+
+                  {geocodeSuggestions.length > 0 && (
+                    <>
+                      <div className="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-caps text-[#635B53]">
+                        Location suggestions
+                      </div>
+                      {geocodeSuggestions.map((suggestion, idx) => (
+                        <button
+                          key={`${suggestion.lat}-${suggestion.lng}-${idx}`}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => handleSelectGeocodeSuggestion(suggestion)}
+                          className="w-full text-left p-3 rounded-xl hover:bg-[#F8F4ED] transition-all flex items-center gap-3 group"
+                        >
+                          <div className="w-8 h-8 rounded-xl bg-[#F4E3DC] text-[#753424] flex items-center justify-center shrink-0">
+                            <MapPin className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-sm text-[#181614] group-hover:text-[#753424] transition-colors truncate">
+                              {suggestion.displayName.split(',')[0]}
+                            </div>
+                            <div className="text-[11px] text-[#4D4640] mt-0.5 line-clamp-1 font-medium">
+                              {suggestion.displayName}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+
                   {matchedRecommendations.map((hub) => (
                     <button
                       key={hub.id}
@@ -328,10 +399,7 @@ export const SearchAndFilterBar: React.FC<{
             {/* All Spots Pill */}
             <button
               type="button"
-              onClick={() => {
-                setSelectedCategory('all');
-                setTimeout(() => onSearchSubmit(), 0);
-              }}
+              onClick={() => setSelectedCategory('all')}
               className={`inline-flex items-center justify-center gap-2 px-4 py-2 rounded-full text-xs tracking-editorial transition-all whitespace-nowrap border ${
                 selectedCategory === 'all'
                   ? 'bg-[#5C2619] text-[#FAF7F2] border-[#5C2619] font-bold shadow-md ring-1 ring-[#5C2619]'
@@ -414,7 +482,7 @@ export const SearchAndFilterBar: React.FC<{
       <FilterBottomSheet
         isOpen={isFilterOpen}
         onClose={() => setIsFilterOpen(false)}
-        onApply={onSearchSubmit}
+        onApply={() => {}}
       />
     </div>
   );

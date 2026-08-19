@@ -19,9 +19,9 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({ place, onSelect }) => {
     addToItinerary,
     removeFromItinerary,
     selectedPlaceId,
-    hoveredPlaceId,
-    setHoveredPlaceId,
   } = useDateStore();
+
+  const [isHovered, setIsHovered] = useState(false);
 
   const [heartBouncing, setHeartBouncing] = useState(false);
   const [justAdded, setJustAdded] = useState(false);
@@ -29,7 +29,6 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({ place, onSelect }) => {
   const isFav = favorites.some((f) => f.id === place.id);
   const inItinerary = itinerary.some((stop) => stop.place.id === place.id);
   const isSelected = selectedPlaceId === place.id;
-  const isHovered = hoveredPlaceId === place.id;
 
   const handleFavoriteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -55,9 +54,13 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({ place, onSelect }) => {
     }
   };
 
-  const photoSrc =
-    place.imageUrl || place.photoUrl || getDefaultImageForCategory(place.category || place.types?.[0]);
-  const isPlaceholderImage = place.imageSource === 'placeholder';
+  // Resolve photo source — guard against empty strings and null
+  const rawPhoto = place.imageUrl || place.photoUrl;
+  const hasValidPhoto = rawPhoto && rawPhoto.trim().length > 0;
+  const photoSrc = hasValidPhoto
+    ? rawPhoto!
+    : getDefaultImageForCategory(place.category || place.types?.[0]);
+  const isPlaceholderImage = !hasValidPhoto;
 
   // Clean tags
   const rawVibe = place.vibe
@@ -68,8 +71,8 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({ place, onSelect }) => {
   return (
     <div
       onClick={() => onSelect(place)}
-      onMouseEnter={() => setHoveredPlaceId(place.id)}
-      onMouseLeave={() => setHoveredPlaceId(null)}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       className={`group bg-white rounded-2xl overflow-hidden border transition-all duration-300 cursor-pointer flex flex-col justify-between ${
         isSelected
           ? 'border-[#753424] ring-2 ring-[#753424]/30 shadow-ambient-hover'
@@ -91,7 +94,9 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({ place, onSelect }) => {
             className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-700 ease-out"
             loading="lazy"
             onError={(e) => {
-              (e.target as HTMLImageElement).src = getDefaultImageForCategory(place.category);
+              const img = e.target as HTMLImageElement;
+              const fallback = getDefaultImageForCategory(place.category || place.types?.[0]);
+              if (img.src !== fallback) img.src = fallback;
             }}
           />
         )}
@@ -194,10 +199,19 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({ place, onSelect }) => {
         </div>
 
         {/* Distance & Dark High-Contrast Price Metadata */}
-        <div className="pt-2.5 border-t border-[#EAE4DA] flex items-center justify-between text-xs">
-          <span className="font-medium text-[#4D4640] truncate mr-2">
-            {place.address ? place.address.split(',')[0] : formatDistance(place.distance)}
-          </span>
+        <div className="pt-2.5 border-t border-[#EAE4DA] flex items-end justify-between text-xs gap-2">
+          <div className="flex flex-col min-w-0 gap-0.5">
+            {place.address && (
+              <span className="font-medium text-[#4D4640] truncate">
+                {place.address.split(',')[0]}
+              </span>
+            )}
+            {place.distance != null && (
+              <span className="font-semibold text-[#753424]">
+                {formatDistance(place.distance)}
+              </span>
+            )}
+          </div>
           <span className="font-bold text-[#181614] tracking-editorial shrink-0">
             {getPriceSymbols(place.priceLevel)}
           </span>

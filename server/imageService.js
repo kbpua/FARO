@@ -2,6 +2,19 @@
 const fetch = require('node-fetch');
 const cache = new Map();
 
+const WIKIMEDIA_TIMEOUT_MS = 3500;
+const UNSPLASH_TIMEOUT_MS = 3000;
+const WIKIMEDIA_MIN_INTERVAL_MS = 350;
+const CACHE_TTL_SUCCESS_MS = 60 * 60 * 1000;
+const CACHE_TTL_MISS_MS = 5 * 60 * 1000;
+
+let lastExternalCallAt = 0;
+let externalChain = Promise.resolve();
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -12,14 +25,39 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
   }
 }
 
+async function scheduleExternalRequest(label, fn) {
+  const run = externalChain.then(async () => {
+    const now = Date.now();
+    const wait = Math.max(0, WIKIMEDIA_MIN_INTERVAL_MS - (now - lastExternalCallAt));
+    if (wait > 0) await sleep(wait);
+    lastExternalCallAt = Date.now();
+    const started = Date.now();
+    try {
+      const result = await fn();
+      console.log('[ImageLookup] external ok', { label, elapsedMs: Date.now() - started });
+      return result;
+    } catch (err) {
+      console.warn('[ImageLookup] external failed', {
+        label,
+        elapsedMs: Date.now() - started,
+        error: err.message,
+      });
+      throw err;
+    }
+  });
+  externalChain = run.catch(() => {});
+  return run;
+}
+
 function getFromCache(key) {
   const entry = cache.get(key);
   if (entry && entry.expiresAt > Date.now()) return entry;
   cache.delete(key);
   return null;
 }
-function setCache(key, data) {
-  cache.set(key, { ...data, expiresAt: Date.now() + 60 * 60 * 1000 });
+
+function setCache(key, data, ttlMs = CACHE_TTL_SUCCESS_MS) {
+  cache.set(key, { ...data, expiresAt: Date.now() + ttlMs });
   return data;
 }
 
@@ -41,10 +79,15 @@ function getWikimediaTagImage(place) {
 async function searchWikimedia(name, cuisine) {
   const q = encodeURIComponent(`${name} ${cuisine || ''} restaurant`);
   const url = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${q}&format=json&origin=*`;
-  try {
-    const resp = await fetchWithTimeout(url, {
-      headers: { 'User-Agent': 'FaroApp/2.0 (https://faro.local; info@faro.local)' },
-    });
+  return scheduleExternalRequest(`wikimedia:${name}`, async () => {
+    const resp = await fetchWithTimeout(
+      url,
+      { headers: { 'User-Agent': 'FaroApp/2.0 (https://faro.local; info@faro.local)' } },
+      WIKIMEDIA_TIMEOUT_MS
+    );
+    if (!resp.ok) {
+      throw new Error(`Wikimedia HTTP ${resp.status}`);
+    }
     const data = await resp.json();
     const title = data?.query?.search?.[0]?.title;
     if (title) {
@@ -52,10 +95,8 @@ async function searchWikimedia(name, cuisine) {
       const imgUrl = `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(clean)}`;
       return { imageUrl: imgUrl, imageSource: 'Wikimedia' };
     }
-  } catch (e) {
-    console.warn('Wikimedia search error:', e.message);
-  }
-  return null;
+    return null;
+  });
 }
 
 async function searchUnsplash(name) {
@@ -63,16 +104,17 @@ async function searchUnsplash(name) {
   if (!accessKey) return null;
   const q = encodeURIComponent(`${name} restaurant`);
   const url = `https://api.unsplash.com/search/photos?query=${q}&per_page=1&client_id=${accessKey}`;
-  try {
-    const resp = await fetchWithTimeout(url);
+  return scheduleExternalRequest(`unsplash:${name}`, async () => {
+    const resp = await fetchWithTimeout(url, {}, UNSPLASH_TIMEOUT_MS);
+    if (!resp.ok) {
+      throw new Error(`Unsplash HTTP ${resp.status}`);
+    }
     const data = await resp.json();
     if (data.results?.[0]?.urls?.regular) {
       return { imageUrl: data.results[0].urls.regular, imageSource: 'Unsplash' };
     }
-  } catch (e) {
-    console.warn('Unsplash error:', e.message);
-  }
-  return null;
+    return null;
+  });
 }
 
 function getPlaceholder(cuisine) {
@@ -97,14 +139,30 @@ async function getPlaceImage(place) {
   result = getWikimediaTagImage(place);
   if (result) return setCache(cacheKey, result);
 
-  result = await searchWikimedia(place.name, place.cuisine);
-  if (result) return setCache(cacheKey, result);
+  try {
+    result = await searchWikimedia(place.name, place.cuisine);
+    if (result) return setCache(cacheKey, result);
+  } catch (err) {
+    console.warn('[ImageLookup] wikimedia search skipped', {
+      placeId: place.id,
+      name: place.name,
+      error: err.message,
+    });
+  }
 
-  result = await searchUnsplash(place.name);
-  if (result) return setCache(cacheKey, result);
+  try {
+    result = await searchUnsplash(place.name);
+    if (result) return setCache(cacheKey, result);
+  } catch (err) {
+    console.warn('[ImageLookup] unsplash search skipped', {
+      placeId: place.id,
+      name: place.name,
+      error: err.message,
+    });
+  }
 
   result = getPlaceholder(place.cuisine);
-  return setCache(cacheKey, result);
+  return setCache(cacheKey, result, CACHE_TTL_MISS_MS);
 }
 
 module.exports = { getPlaceImage, getPlaceholder };

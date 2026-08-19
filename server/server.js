@@ -12,20 +12,68 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-async function attachImages(places, maxLookups, getPlaceImageFn, getPlaceholderFn) {
-  await Promise.all(
-    places.map(async (p, i) => {
-      if (i < maxLookups) {
+const IMAGE_LOOKUP_CONCURRENCY = 2;
+
+async function attachImages(places, maxLookups, getPlaceImageFn, getPlaceholderFn, logContext = 'unknown') {
+  const imageDiagnostics = [];
+  const attachStarted = Date.now();
+
+  async function attachOne(p, i) {
+    if (i < maxLookups) {
+      try {
         const img = await getPlaceImageFn(p);
         p.imageUrl = img.imageUrl;
         p.imageSource = img.imageSource;
-      } else {
+        imageDiagnostics.push({
+          placeId: p.id,
+          placeName: p.name,
+          attemptedLookup: true,
+          result: img.imageSource === 'placeholder' ? 'no_photo_placeholder' : 'photo_found',
+          imageSource: img.imageSource,
+        });
+      } catch (err) {
         const placeholder = getPlaceholderFn(p.cuisine);
         p.imageUrl = placeholder.imageUrl;
         p.imageSource = placeholder.imageSource;
+        imageDiagnostics.push({
+          placeId: p.id,
+          placeName: p.name,
+          attemptedLookup: true,
+          result: 'lookup_error',
+          error: err.message,
+          imageSource: 'placeholder',
+        });
       }
-    })
-  );
+    } else {
+      const placeholder = getPlaceholderFn(p.cuisine);
+      p.imageUrl = placeholder.imageUrl;
+      p.imageSource = placeholder.imageSource;
+      imageDiagnostics.push({
+        placeId: p.id,
+        placeName: p.name,
+        attemptedLookup: false,
+        result: 'skipped_lookup_placeholder',
+        imageSource: 'placeholder',
+      });
+    }
+  }
+
+  for (let i = 0; i < places.length; i += IMAGE_LOOKUP_CONCURRENCY) {
+    const batch = places.slice(i, i + IMAGE_LOOKUP_CONCURRENCY);
+    await Promise.all(batch.map((p, batchIdx) => attachOne(p, i + batchIdx)));
+  }
+  console.log('[ImageLookup] batch summary', {
+    context: logContext,
+    totalPlaces: places.length,
+    elapsedMs: Date.now() - attachStarted,
+    lookupsAttempted: imageDiagnostics.filter((d) => d.attemptedLookup).length,
+    byResult: imageDiagnostics.reduce((acc, item) => {
+      acc[item.result] = (acc[item.result] || 0) + 1;
+      return acc;
+    }, {}),
+    sample: imageDiagnostics.slice(0, 8),
+  });
+  return imageDiagnostics;
 }
 
 // Helper: Calculate distance between two coordinates (Haversine formula in km)
@@ -142,18 +190,51 @@ async function handlePlacesSearch(req, res) {
 
   // A. OpenStreetMap (primary)
   let results = [];
+  let cuisineDataLimited = false;
+  let responseSource = 'curated_mock';
+  let responseDiagnostics = {
+    source: 'curated_mock',
+    mirror: null,
+    attempts: [],
+    filteredCacheHit: false,
+    rawCacheHit: false,
+    serverlessRuntime: Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME),
+    imageLookup: [],
+    fallbackReason: null,
+  };
   try {
-    const osmResults = await searchPlacesOverpass({
+    const overpassPayload = await searchPlacesOverpass({
       lat: latitude,
       lng: longitude,
       radius: searchRadius,
       keyword: keyword || query || '',
+      category: activeCategory,
+      cuisine: cuisine || 'all',
     });
+    const osmResults = overpassPayload.results || [];
+    cuisineDataLimited = Boolean(overpassPayload.cuisineDataLimited);
+    responseDiagnostics = {
+      ...responseDiagnostics,
+      ...(overpassPayload.diagnostics || {}),
+    };
     osmResults.forEach(p => (p.source = 'OpenStreetMap'));
-    await attachImages(osmResults, MAX_IMAGE_LOOKUPS, getPlaceImage, getPlaceholder);
+    responseDiagnostics.imageLookup = await attachImages(
+      osmResults,
+      MAX_IMAGE_LOOKUPS,
+      getPlaceImage,
+      getPlaceholder,
+      'overpass'
+    );
     results = osmResults;
+    if (osmResults.length > 0) {
+      responseSource = 'live_overpass';
+      responseDiagnostics.source = 'live_overpass';
+    } else {
+      responseDiagnostics.fallbackReason = 'overpass_returned_zero_results';
+    }
   } catch (e) {
     console.warn('[Overpass Search Error]:', e.message);
+    responseDiagnostics.fallbackReason = `overpass_error:${e.message}`;
   }
 
   // B. Foursquare (fallback if <5 results)
@@ -219,8 +300,18 @@ async function handlePlacesSearch(req, res) {
         };
       });
       fsqPlaces.forEach(p => (p.source = 'Foursquare'));
-      await attachImages(fsqPlaces, MAX_IMAGE_LOOKUPS, getPlaceImage, getPlaceholder);
+      responseDiagnostics.imageLookup = await attachImages(
+        fsqPlaces,
+        MAX_IMAGE_LOOKUPS,
+        getPlaceImage,
+        getPlaceholder,
+        'foursquare'
+      );
       results = results.concat(fsqPlaces);
+      if (results.length > 0) {
+        responseSource = 'live_foursquare';
+        responseDiagnostics.source = 'live_foursquare';
+      }
     } catch (err) {
       console.warn('[Foursquare API Error]:', err.message);
     }
@@ -254,8 +345,18 @@ async function handlePlacesSearch(req, res) {
         vibe: place.price_level > 2 ? 'Special Occasion' : 'First Date Friendly',
       }));
       googlePlaces.forEach(p => (p.source = 'Google'));
-      await attachImages(googlePlaces, MAX_IMAGE_LOOKUPS, getPlaceImage, getPlaceholder);
+      responseDiagnostics.imageLookup = await attachImages(
+        googlePlaces,
+        MAX_IMAGE_LOOKUPS,
+        getPlaceImage,
+        getPlaceholder,
+        'google'
+      );
       results = results.concat(googlePlaces);
+      if (results.length > 0) {
+        responseSource = 'live_google';
+        responseDiagnostics.source = 'live_google';
+      }
     } catch (err) {
       console.warn('[Google Places API Error]:', err.message);
     }
@@ -277,6 +378,15 @@ async function handlePlacesSearch(req, res) {
       p.imageSource = 'placeholder';
     });
     results = mockResults;
+    responseSource = 'curated_mock';
+    responseDiagnostics.source = 'curated_mock';
+    responseDiagnostics.imageLookup = mockResults.slice(0, 8).map((p) => ({
+      placeId: p.id,
+      placeName: p.name,
+      attemptedLookup: false,
+      result: 'mock_placeholder',
+      imageSource: 'placeholder',
+    }));
   }
 
   // Filters
@@ -287,7 +397,21 @@ async function handlePlacesSearch(req, res) {
     results = results.filter(p => p.openNow);
   }
 
-  return res.json({ success: true, mode: 'live', results });
+  console.log('[PlacesAPI] response summary', {
+    source: responseSource,
+    resultCount: results.length,
+    cuisineDataLimited,
+    diagnostics: responseDiagnostics,
+  });
+
+  return res.json({
+    success: true,
+    mode: 'live',
+    source: responseSource,
+    results,
+    cuisineDataLimited,
+    diagnostics: responseDiagnostics,
+  });
 }
 
 // Places Search Routes
@@ -302,6 +426,12 @@ app.get('/api/places/image', async (req, res) => {
     return res.status(400).json({ success: false, error: 'placeId or name required' });
   }
   try {
+    console.log('[ImageEndpoint] request', {
+      placeId: placeId || null,
+      osmNodeId: osmNodeId || null,
+      name: name || null,
+      cuisine: cuisine || null,
+    });
     const place = {
       id: placeId || osmNodeId || name,
       name: name || '',
@@ -313,6 +443,11 @@ app.get('/api/places/image', async (req, res) => {
         params: { data: `[out:json];node(${osmNodeId});out body;` },
         timeout: 8000,
       });
+      console.log('[ImageEndpoint] node tag lookup', {
+        osmNodeId,
+        status: overpassResp.status,
+        elementCount: overpassResp.data?.elements?.length || 0,
+      });
       const node = overpassResp.data?.elements?.[0];
       if (node?.tags) {
         place.tags = node.tags;
@@ -321,6 +456,11 @@ app.get('/api/places/image', async (req, res) => {
       }
     }
     const result = await getPlaceImage(place);
+    console.log('[ImageEndpoint] result', {
+      id: place.id,
+      imageSource: result.imageSource,
+      hasImageUrl: Boolean(result.imageUrl),
+    });
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('[Image Endpoint Error]:', err.message);
@@ -553,7 +693,7 @@ app.get('/api/health', (req, res) => {
 });
 
 if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 5000;
+  const PORT = process.env.PORT || 5001;
   app.listen(PORT, () => {
     console.log(`✨ Faro API Server running on http://localhost:${PORT}`);
   });

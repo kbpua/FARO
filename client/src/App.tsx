@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Place } from './types/place';
 import { fetchNearbyPlaces } from './services/api';
 import { useDateStore } from './store/useDateStore';
+import { useDebounce } from './hooks/useDebounce';
 import { Navbar } from './components/layout/Navbar';
 import { SearchAndFilterBar } from './components/search/SearchAndFilterBar';
 import { DateMap } from './components/map/DateMap';
@@ -33,53 +34,94 @@ export const App: React.FC = () => {
 
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cuisineDataLimited, setCuisineDataLimited] = useState(false);
   const [activeModalPlace, setActiveModalPlace] = useState<Place | null>(null);
+  const [immediateFetchNonce, setImmediateFetchNonce] = useState(0);
+  const [mapReady, setMapReady] = useState(false);
+  const [showInitialSplash, setShowInitialSplash] = useState(true);
 
-  // Fetch places from Faro API proxy
-  const loadPlaces = useCallback(async () => {
+  const searchParams = useMemo(
+    () => ({
+      lat: selectedLocation.lat,
+      lng: selectedLocation.lng,
+      radius: searchRadiusKm * 1000,
+      category: selectedCategory,
+      cuisine: selectedCuisine,
+      occasion: selectedOccasion,
+      minRating,
+      priceLevels: selectedPriceLevels,
+      onlyOpenNow,
+      keyword: searchKeyword,
+    }),
+    [
+      selectedLocation.lat,
+      selectedLocation.lng,
+      searchRadiusKm,
+      selectedCategory,
+      selectedCuisine,
+      selectedOccasion,
+      minRating,
+      selectedPriceLevels,
+      onlyOpenNow,
+      searchKeyword,
+    ]
+  );
+
+  const debouncedSearchParams = useDebounce(searchParams, 500);
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const runFetch = useCallback(async (params: typeof searchParams, requestId: number) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
+
     try {
       const data = await fetchNearbyPlaces({
-        lat: selectedLocation.lat,
-        lng: selectedLocation.lng,
-        radius: searchRadiusKm * 1000,
-        category: selectedCategory,
-        cuisine: selectedCuisine,
-        occasion: selectedOccasion,
-        minRating: minRating,
-        priceLevels: selectedPriceLevels,
-        onlyOpenNow: onlyOpenNow,
-        keyword: searchKeyword,
+        ...params,
+        signal: controller.signal,
       });
 
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return;
+
       setPlaces(data.results || []);
+      setCuisineDataLimited(Boolean(data.cuisineDataLimited));
     } catch (err) {
+      if (controller.signal.aborted) return;
+      if (requestId !== requestIdRef.current) return;
       console.error('Error fetching places:', err);
       setPlaces([]);
+      setCuisineDataLimited(false);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current && !controller.signal.aborted) {
+        setLoading(false);
+      }
     }
-  }, [
-    selectedLocation.lat,
-    selectedLocation.lng,
-    searchRadiusKm,
-    selectedCategory,
-    selectedCuisine,
-    selectedOccasion,
-    minRating,
-    selectedPriceLevels,
-    onlyOpenNow,
-    searchKeyword,
-  ]);
+  }, []);
 
-  // Initial and reactive load on location/category/radius/cuisine/occasion change
+  // Debounced fetch on filter/search param changes
   useEffect(() => {
-    loadPlaces();
-  }, [loadPlaces]);
+    const requestId = ++requestIdRef.current;
+    runFetch(debouncedSearchParams, requestId);
+  }, [debouncedSearchParams, runFetch]);
 
-  // Client-side vibe filter refinement if needed
-  const filteredPlaces = places.filter((place) => {
-    // Vibe filter
+  // Immediate fetch when user explicitly submits a new location
+  useEffect(() => {
+    if (immediateFetchNonce === 0) return;
+    const requestId = ++requestIdRef.current;
+    runFetch(searchParams, requestId);
+  }, [immediateFetchNonce, searchParams, runFetch]);
+
+  const loadPlaces = useCallback(() => {
+    setImmediateFetchNonce(n => n + 1);
+  }, []);
+
+  const handleMapReady = useCallback(() => {
+    setMapReady(true);
+  }, []);
+
+  const filteredPlaces = useMemo(() => places.filter((place) => {
     if (selectedVibe !== 'All Vibes') {
       const vibeLower = selectedVibe.toLowerCase();
       const matchVibe =
@@ -89,12 +131,10 @@ export const App: React.FC = () => {
       if (!matchVibe) return false;
     }
 
-    // Rating filter
     if (minRating > 0 && (place.rating || 0) < minRating) {
       return false;
     }
 
-    // Price level filter
     if (
       selectedPriceLevels.length > 0 &&
       !selectedPriceLevels.includes(place.priceLevel)
@@ -102,15 +142,13 @@ export const App: React.FC = () => {
       return false;
     }
 
-    // Open now filter
     if (onlyOpenNow && !place.openNow) {
       return false;
     }
 
     return true;
-  });
+  }), [places, selectedVibe, minRating, selectedPriceLevels, onlyOpenNow]);
 
-  // Sync selectedPlaceId with activeModalPlace
   useEffect(() => {
     if (selectedPlaceId) {
       const found = places.find((p) => p.id === selectedPlaceId);
@@ -135,72 +173,105 @@ export const App: React.FC = () => {
     }
   }, [selectedPlaceId, places, selectedLocation]);
 
-  const handleSelectPlace = (place: Place) => {
+  const handleSelectPlace = useCallback((place: Place) => {
     setSelectedPlaceId(place.id);
-  };
+  }, [setSelectedPlaceId]);
+
+  const handlePreviewPlace = useCallback((place: Place) => {
+    setSelectedPlaceId(place.id);
+  }, [setSelectedPlaceId]);
 
   const handleCloseModal = () => {
     setSelectedPlaceId(null);
     setActiveModalPlace(null);
   };
 
+  useEffect(() => {
+    if (!showInitialSplash) return;
+
+    const needsMapReady = activeViewMode !== 'list';
+    if (loading || (needsMapReady && !mapReady)) return;
+
+    const timer = window.setTimeout(() => {
+      setShowInitialSplash(false);
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [activeViewMode, loading, mapReady, showInitialSplash]);
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FAF7F2] text-[#2B2825] selection:bg-[#E7C8BB] selection:text-[#2B2825]">
-      {/* Top Faro Navbar */}
+      {showInitialSplash && (
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-[#FAF7F2]">
+          <div className="flex flex-col items-center gap-5 text-center">
+            <div className="relative flex h-24 w-24 items-center justify-center">
+              <div className="absolute inset-0 rounded-full border border-[#C98F7E]/40 animate-ping"></div>
+              <div className="absolute inset-2 rounded-full border border-[#8C4A38]/20"></div>
+              <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-[#8C4A38] text-[#FAF7F2] shadow-ambient-hover">
+                <span className="text-2xl">✦</span>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <div className="text-xl font-bold tracking-[0.18em] uppercase text-[#8C4A38]">Faro</div>
+              <p className="text-sm text-[#6E6258]">Finding warm places for your next date</p>
+            </div>
+            <div className="h-1 w-28 overflow-hidden rounded-full bg-[#E9DED2]">
+              <div className="faro-splash-bar h-full w-full bg-[#8C4A38] rounded-full"></div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Navbar />
 
-      {/* Search & Category Filter Bar */}
       <SearchAndFilterBar onSearchSubmit={loadPlaces} />
 
-      {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Split View (Desktop) */}
         {activeViewMode === 'split' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Left: Place List Grid (7 cols) */}
             <div className="lg:col-span-7 space-y-4">
               <PlaceList
                 places={filteredPlaces}
                 isLoading={loading}
+                cuisineDataLimited={cuisineDataLimited}
                 onSelectPlace={handleSelectPlace}
                 onRefresh={loadPlaces}
               />
             </div>
 
-            {/* Right: Sticky Leaflet Map (5 cols) */}
             <div className="hidden lg:block lg:col-span-5 sticky top-44 h-[calc(100vh-210px)]">
               <DateMap
                 places={filteredPlaces}
-                onSelectPlace={handleSelectPlace}
+                onSelectPlace={handlePreviewPlace}
+                onMapReady={handleMapReady}
               />
             </div>
           </div>
         )}
 
-        {/* List Only View */}
         {activeViewMode === 'list' && (
           <div className="max-w-5xl mx-auto">
             <PlaceList
               places={filteredPlaces}
               isLoading={loading}
+              cuisineDataLimited={cuisineDataLimited}
               onSelectPlace={handleSelectPlace}
               onRefresh={loadPlaces}
             />
           </div>
         )}
 
-        {/* Map Only View */}
         {activeViewMode === 'map' && (
           <div className="w-full h-[calc(100vh-210px)]">
             <DateMap
               places={filteredPlaces}
-              onSelectPlace={handleSelectPlace}
+              onSelectPlace={handlePreviewPlace}
+              onMapReady={handleMapReady}
             />
           </div>
         )}
       </main>
 
-      {/* Mobile Floating Map/List Switcher Pill */}
       <div className="lg:hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
         <button
           onClick={() => setActiveViewMode(activeViewMode === 'map' ? 'list' : 'map')}
@@ -220,7 +291,6 @@ export const App: React.FC = () => {
         </button>
       </div>
 
-      {/* Modals & Drawers */}
       <PlaceDetailsModal
         place={activeModalPlace}
         onClose={handleCloseModal}

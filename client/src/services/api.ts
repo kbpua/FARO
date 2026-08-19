@@ -19,9 +19,14 @@ export interface PlacesSearchParams {
   onlyOpenNow?: boolean;
   keyword?: string;
   query?: string;
+  signal?: AbortSignal;
 }
 
-export async function fetchNearbyPlaces(params: PlacesSearchParams): Promise<{ results: Place[]; mode?: string }> {
+export async function fetchNearbyPlaces(params: PlacesSearchParams): Promise<{
+  results: Place[];
+  mode?: string;
+  cuisineDataLimited?: boolean;
+}> {
   try {
     const res = await api.get('/places', {
       params: {
@@ -36,16 +41,19 @@ export async function fetchNearbyPlaces(params: PlacesSearchParams): Promise<{ r
         onlyOpenNow: params.onlyOpenNow ? 'true' : 'false',
         keyword: params.keyword || params.query || '',
       },
+      signal: params.signal,
     });
 
     if (res.data && res.data.success) {
       return {
         results: res.data.results || [],
         mode: res.data.mode,
+        cuisineDataLimited: Boolean(res.data.cuisineDataLimited),
       };
     }
     return { results: [] };
   } catch (error) {
+    if (axios.isCancel(error)) throw error;
     console.error('Failed to fetch places:', error);
     throw error;
   }
@@ -97,5 +105,21 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
   } catch (error) {
     console.error('Geocoding error:', error);
     return null;
+  }
+}
+
+export async function fetchGeocodeSuggestions(query: string): Promise<GeocodeResult[]> {
+  if (!query.trim()) return [];
+  try {
+    const res = await api.get('/geocode', {
+      params: { address: query.trim() },
+    });
+    if (res.data?.success && Array.isArray(res.data.results)) {
+      return res.data.results.slice(0, 5);
+    }
+    return [];
+  } catch (error) {
+    console.error('Geocode suggestions error:', error);
+    return [];
   }
 }

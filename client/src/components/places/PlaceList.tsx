@@ -9,11 +9,18 @@ import { Compass } from 'lucide-react';
 interface PlaceListProps {
   places: Place[];
   isLoading: boolean;
+  cuisineDataLimited?: boolean;
   onSelectPlace: (place: Place) => void;
   onRefresh?: () => void;
 }
 
-export const PlaceList: React.FC<PlaceListProps> = ({ places, isLoading, onSelectPlace, onRefresh }) => {
+export const PlaceList: React.FC<PlaceListProps> = ({
+  places,
+  isLoading,
+  cuisineDataLimited = false,
+  onSelectPlace,
+  onRefresh,
+}) => {
   const { selectedLocation } = useDateStore();
 
   return (
@@ -43,10 +50,17 @@ export const PlaceList: React.FC<PlaceListProps> = ({ places, isLoading, onSelec
 
       {/* Result Cards Grid */}
       {!isLoading && places.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
-          {places.map((place) => (
-            <PlaceCard key={place.id} place={place} onSelect={onSelectPlace} />
-          ))}
+        <div className="space-y-4">
+          {cuisineDataLimited && (
+            <p className="text-xs text-[#635B53] bg-[#F5EFE6] border border-[#E0D7C9] rounded-xl px-3 py-2 font-medium">
+              Cuisine data is limited for this area — results may include spots without verified cuisine tags.
+            </p>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
+            {places.map((place) => (
+              <PlaceCard key={place.id} place={place} onSelect={onSelectPlace} />
+            ))}
+          </div>
         </div>
       )}
     </div>

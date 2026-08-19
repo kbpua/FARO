@@ -1,7 +1,8 @@
 export function formatDistance(km?: number): string {
   if (km === undefined || km === null) return '';
   if (km < 1) {
-    return `${Math.round(km * 1000)} m away`;
+    const meters = Math.round(km * 1000);
+    return `${meters} m away`;
   }
   return `${km.toFixed(1)} km away`;
 }
