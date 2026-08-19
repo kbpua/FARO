@@ -12,6 +12,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+async function attachImages(places, maxLookups, getPlaceImageFn, getPlaceholderFn) {
+  await Promise.all(
+    places.map(async (p, i) => {
+      if (i < maxLookups) {
+        const img = await getPlaceImageFn(p);
+        p.imageUrl = img.imageUrl;
+        p.imageSource = img.imageSource;
+      } else {
+        const placeholder = getPlaceholderFn(p.cuisine);
+        p.imageUrl = placeholder.imageUrl;
+        p.imageSource = placeholder.imageSource;
+      }
+    })
+  );
+}
+
 // Helper: Calculate distance between two coordinates (Haversine formula in km)
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Earth's radius in km
@@ -134,18 +150,7 @@ async function handlePlacesSearch(req, res) {
       keyword: keyword || query || '',
     });
     osmResults.forEach(p => (p.source = 'OpenStreetMap'));
-    for (let i = 0; i < osmResults.length; i++) {
-      const p = osmResults[i];
-      if (i < MAX_IMAGE_LOOKUPS) {
-        const img = await getPlaceImage(p);
-        p.imageUrl = img.imageUrl;
-        p.imageSource = img.imageSource;
-      } else {
-        const placeholder = getPlaceholder(p.cuisine);
-        p.imageUrl = placeholder.imageUrl;
-        p.imageSource = placeholder.imageSource;
-      }
-    }
+    await attachImages(osmResults, MAX_IMAGE_LOOKUPS, getPlaceImage, getPlaceholder);
     results = osmResults;
   } catch (e) {
     console.warn('[Overpass Search Error]:', e.message);
@@ -214,18 +219,7 @@ async function handlePlacesSearch(req, res) {
         };
       });
       fsqPlaces.forEach(p => (p.source = 'Foursquare'));
-      for (let i = 0; i < fsqPlaces.length; i++) {
-        const p = fsqPlaces[i];
-        if (i < MAX_IMAGE_LOOKUPS) {
-          const img = await getPlaceImage(p);
-          p.imageUrl = img.imageUrl;
-          p.imageSource = img.imageSource;
-        } else {
-          const placeholder = getPlaceholder(p.cuisine);
-          p.imageUrl = placeholder.imageUrl;
-          p.imageSource = placeholder.imageSource;
-        }
-      }
+      await attachImages(fsqPlaces, MAX_IMAGE_LOOKUPS, getPlaceImage, getPlaceholder);
       results = results.concat(fsqPlaces);
     } catch (err) {
       console.warn('[Foursquare API Error]:', err.message);
@@ -260,18 +254,7 @@ async function handlePlacesSearch(req, res) {
         vibe: place.price_level > 2 ? 'Special Occasion' : 'First Date Friendly',
       }));
       googlePlaces.forEach(p => (p.source = 'Google'));
-      for (let i = 0; i < googlePlaces.length; i++) {
-        const p = googlePlaces[i];
-        if (i < MAX_IMAGE_LOOKUPS) {
-          const img = await getPlaceImage(p);
-          p.imageUrl = img.imageUrl;
-          p.imageSource = img.imageSource;
-        } else {
-          const placeholder = getPlaceholder(p.cuisine);
-          p.imageUrl = placeholder.imageUrl;
-          p.imageSource = placeholder.imageSource;
-        }
-      }
+      await attachImages(googlePlaces, MAX_IMAGE_LOOKUPS, getPlaceImage, getPlaceholder);
       results = results.concat(googlePlaces);
     } catch (err) {
       console.warn('[Google Places API Error]:', err.message);
