@@ -10,7 +10,7 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.osm.ch/api/interpreter',
 ];
 
-const OVERPASS_TIMEOUT_MS = 7000;        // reduced: mirrors raced in parallel, faster fail is fine
+const OVERPASS_TIMEOUT_MS = 15000;       // raised: parallel race — 15s is total wall-clock max, not per-mirror sequential
 const CACHE_TTL_MS = 120000;             // 2 min: positive result cache
 const NEGATIVE_CACHE_TTL_MS = 90000;    // 90 s: cache zero-result / all-failed outcomes
 const MIRROR_COOLDOWN_MS = 120000;      // 2 min: skip recently-failed mirrors
@@ -33,7 +33,7 @@ function buildOverpassQuery({ lat, lng, radius, keyword = '' }) {
   const amenityFilter = '"amenity"~"^(restaurant|cafe|bar|pub|fast_food|ice_cream)$"';
   const shopFilter = '"shop"~"^(bakery|coffee)$"';
   const nameClause = keyword ? `["name"~"${keyword}",i]` : '';
-  return `[out:json][timeout:10];
+  return `[out:json][timeout:14];
 (
   node[${amenityFilter}]${nameClause}(around:${radius},${lat},${lng});
   way[${amenityFilter}]${nameClause}(around:${radius},${lat},${lng});
